@@ -5,31 +5,9 @@ import os, numpy as np
 from constants import *
 from helpers import *
 
-per_peering_lats = {}
-for row in open(os.path.join(CACHE_DIR, 'vultr_ingress_latencies_by_dst.csv'),'r'):
-	try:
-		ip,pop,peer,lat = row.strip().split(',')
-	except ValueError:
-		ip,pop,popcheck,peer,lat = row.strip().split(',')
-		popcheck = popcheck.replace('(','').replace('\'','').strip()
-		peer = peer.replace(')','').replace('\'','').strip()
-		if pop != popcheck: continue
-	if lat == '-1': continue
-	lat = float(lat) * 1000
-	try:
-		per_peering_lats[ip]
-	except KeyError:
-		per_peering_lats[ip] = {}
-	try:
-		per_peering_lats[ip][pop,peer].append(lat)
-	except KeyError:
-		per_peering_lats[ip][pop,peer] = [lat]
-
+per_peering_lats = parse_ingress_latencies_mp(os.path.join(CACHE_DIR, 'vultr_ingress_latencies_by_dst.csv'))
+per_peering_lats = per_peering_lats['meas_by_ip']
 all_ingresses = list(set([popp for ip in per_peering_lats for popp in per_peering_lats[ip]]))
-
-for ip in per_peering_lats:
-	for popp in per_peering_lats[ip]:
-		per_peering_lats[ip][popp] = np.min(per_peering_lats[ip][popp])
 
 anycast_lats = {}
 with open(os.path.join(CACHE_DIR, 'vultr_anycast_latency.csv'),'r') as f:
@@ -73,7 +51,7 @@ n_popps_by_ip = [len(per_peering_lats[ip]) for ip in ips_in_all]
 # print(np.median(n_popps_by_ip))
 
 #### PoP Fails!
-comps, good_at_all_comps = [],[]
+one_per_pop_suboptimality, one_per_pop_hits, best_case_suboptimality = [],[],[]
 for pop in VULTR_POP_TO_LOC:
 	for ip in ips_in_all:
 		best_pop_lat = np.min(list(lats_by_pop[ip].values()))
@@ -90,16 +68,23 @@ for pop in VULTR_POP_TO_LOC:
 		best_alternate_pop_lat = np.min(list(lats_by_pop[ip][p] for p in lats_by_pop[ip] if p != pop)) 
 		if best_alternate_pop_lat == NO_MEASURE_LAT: 
 			continue
-		comps.append(np.maximum(best_alternate_pop_lat - best_alternate_lat,0))
-		good_at_all_comps.append(best_alternate_pop_lat - best_pop_lat) # best_pop_lat is failed one
+		one_per_pop_suboptimality.append(np.maximum(best_alternate_pop_lat - best_alternate_lat,0))
+		one_per_pop_hits.append(best_alternate_pop_lat - best_pop_lat) # best_pop_lat is failed one
+		best_case_suboptimality.append(best_alternate_lat - best_pop_lat)
 import matplotlib.pyplot as plt
-print(len(comps))
-x,cdf_x = get_cdf_xy(comps)
-plt.plot(x,cdf_x,label='Compared to Best Unfailed')
-x,cdf_x = get_cdf_xy(good_at_all_comps)
-plt.plot(x,cdf_x,label='Compared to Best PoP (Failed)')
+x,cdf_x = get_cdf_xy(one_per_pop_suboptimality)
+# this is how much performance you're giving up by not using per-intf stuff
+plt.plot(x,cdf_x,label='One per PoP Suboptimality')
+x,cdf_x = get_cdf_xy(one_per_pop_hits)
+# compare pop to second best pop (not per-intf)
+plt.plot(x,cdf_x,label='One per PoP Failover Performance Hit')
+
+x,cdf_x = get_cdf_xy(best_case_suboptimality)
+# compare best case lat to previous one-per-pop lat
+plt.plot(x,cdf_x,label='Best Case Failover Lat, Previous One per PoP')
+
 plt.xlabel("Difference (Method - Optimal) (ms)")
-plt.ylabel("CDF of Cases")
+plt.ylabel("CDF of UGs")
 plt.grid(True)
 plt.legend()
 plt.xlim([0,100])
